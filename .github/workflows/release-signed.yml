@@ -1,0 +1,35 @@
+name: Release APK (signed)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        packages: platform-tools
+      - run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build release (unsigned)
+        run: ./gradlew :app:assembleRelease
+      - name: Sign with apksigner
+        run: |
+          ls app/build/outputs/apk/release/
+          # générer une keystore locale et signer
+          keytool -genkeypair -v -keystore $HOME/codync-release.keystore -alias codync -keyalg RSA -keysize 2048 -validity 10000 -storepass codyncsign -keypass codyncsign -dname "CN=Codync Release, OU=Personal, O=SelfHost, C=MG"
+          BT=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
+          $ANDROID_HOME/build-tools/$BT/apksigner sign --ks $HOME/codync-release.keystore --ks-pass pass:codyncsign --key-pass pass:codyncsign --out app/build/outputs/apk/release/codync-release-signed.apk app/build/outputs/apk/release/app-release-unsigned.apk
+          $ANDROID_HOME/build-tools/$BT/apksigner verify --print-certs app/build/outputs/apk/release/codync-release-signed.apk | head -5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codync-release-apk
+          path: apps/android/app/build/outputs/apk/release/codync-release-signed.apk
