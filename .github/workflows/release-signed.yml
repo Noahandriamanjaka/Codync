@@ -22,15 +22,27 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build release (unsigned)
         run: ./gradlew :app:assembleRelease
-      - name: Sign with apksigner
+      - name: Sign with persistent keystore
+        env:
+          CODYNC_KEYSTORE_B64: ${{ secrets.CODYNC_RELEASE_KEYSTORE_B64 }}
+          CODYNC_SIGNING_PASSWORD: ${{ secrets.CODYNC_RELEASE_KEYSTORE_PASSWORD }}
         run: |
-          ls app/build/outputs/apk/release/
-          # générer une keystore locale et signer
-          keytool -genkeypair -v -keystore $HOME/codync-release.keystore -alias codync -keyalg RSA -keysize 2048 -validity 10000 -storepass codyncsign -keypass codyncsign -dname "CN=Codync Release, OU=Personal, O=SelfHost, C=MG"
-          BT=$(ls $ANDROID_HOME/build-tools/ | sort -V | tail -1)
-          $ANDROID_HOME/build-tools/$BT/apksigner sign --ks $HOME/codync-release.keystore --ks-pass pass:codyncsign --key-pass pass:codyncsign --out app/build/outputs/apk/release/codync-release-signed.apk app/build/outputs/apk/release/app-release-unsigned.apk
-          $ANDROID_HOME/build-tools/$BT/apksigner verify --print-certs app/build/outputs/apk/release/codync-release-signed.apk | head -5
+          set -euo pipefail
+          test -n "$CODYNC_KEYSTORE_B64"
+          test -n "$CODYNC_SIGNING_PASSWORD"
+          printf '%s' "$CODYNC_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/codync-release.p12"
+          chmod 600 "$RUNNER_TEMP/codync-release.p12"
+          BT=$(ls "$ANDROID_HOME/build-tools/" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
+            --ks "$RUNNER_TEMP/codync-release.p12" --ks-type PKCS12 \
+            --ks-key-alias codync \
+            --ks-pass env:CODYNC_SIGNING_PASSWORD \
+            --key-pass env:CODYNC_SIGNING_PASSWORD \
+            --out app/build/outputs/apk/release/codync-release-signed.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --print-certs app/build/outputs/apk/release/codync-release-signed.apk
       - uses: actions/upload-artifact@v4
         with:
           name: codync-release-apk
           path: apps/android/app/build/outputs/apk/release/codync-release-signed.apk
+          if-no-files-found: error
