@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from 'react'
 import type { Screen } from '@shared/analytics'
+import { APPEARANCES, type Appearance } from '@shared/appearance'
 import { islandLabel } from '@shared/island'
+import { VOICE_SHORTCUTS, type VoiceShortcut } from '@shared/voice-shortcut'
 import { Button, CardForm, CardSection, ChoicePicker, IconButton, ProgressBar, Switch, ValueRow } from '../../components/Controls'
 import { Icon } from '../../components/Icon'
 import { useDismiss } from '../../components/Overlay'
@@ -111,6 +113,8 @@ function PageContent({ page }: { page: SettingsPage }) {
 /** Account, window and app preferences. */
 function GeneralSettings() {
   const account = useAccount()
+  const [appearance, setAppearance] = useState<Appearance>('system')
+  useEffect(() => void window.codync.app.appearance().then(setAppearance), [])
   const [textSize, setTextSize] = usePref(prefs.textSize)
   const [usageIconStyle, setUsageIconStyle] = usePref(prefs.usageIconStyle)
   const [compact, setCompact] = usePref(prefs.sidebarCompact)
@@ -120,6 +124,8 @@ function GeneralSettings() {
   useEffect(() => void window.codync.app.launchAtLogin().then(setLaunchAtLogin), [])
   const [island, setIsland] = useState(false)
   useEffect(() => void window.codync.island.enabled().then(setIsland), [])
+  const [voiceShortcut, setVoiceShortcut] = useState<VoiceShortcut>('off')
+  useEffect(() => void window.codync.speech.shortcut().then(setVoiceShortcut), [])
 
   return (
     <CardForm>
@@ -151,6 +157,9 @@ function GeneralSettings() {
         </div>
       </CardSection>
       <CardSection title="Appearance">
+        <ValueRow label="Theme">
+          <ChoicePicker selection={appearance} options={[...APPEARANCES]} onChange={(value) => void window.codync.app.setAppearance(value).then(setAppearance)} />
+        </ValueRow>
         <ValueRow label="Text size">
           <ChoicePicker
             selection={textSize}
@@ -171,6 +180,12 @@ function GeneralSettings() {
           <Switch on={island} onChange={(on) => void window.codync.island.setEnabled(on).then(setIsland)}>
             {islandLabel(window.codync.platform)}
           </Switch>
+        ) : null}
+        {/* On-device speech, so macOS only. */}
+        {window.codync.speech.available ? (
+          <ValueRow label="Voice input shortcut" detail="Talk to a bot from any app, then tap the key once more to send.">
+            <ChoicePicker selection={voiceShortcut} options={VOICE_SHORTCUTS} onChange={(s) => void window.codync.speech.setShortcut(s).then(setVoiceShortcut)} />
+          </ValueRow>
         ) : null}
         <Switch on={launchAtLogin} onChange={(on) => void window.codync.app.setLaunchAtLogin(on).then(setLaunchAtLogin)}>
           Open at login

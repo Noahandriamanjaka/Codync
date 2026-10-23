@@ -38,7 +38,8 @@ UI: *About usage analytics…*) shows the same promise in the app, in one text p
 
 - **Host** (`host/src/analytics.rs`, `analytics/`): `api::dispatch` maps successful API calls to
   events (`analytics::observe_call`), so every client is covered once; a resent message (same
-  `clientNonce`) is not counted again. Bot actors report `turn_finished`, the phone channel
+  `clientNonce`) is not counted again. Bot actors report `turn_finished` and `agent_fell_back` (a turn moved on to the bot's next
+  agent: the agent and why, see [agent fallbacks](agent-fallback.md)), the phone channel
   reports pairing and daily phone connections, and the host reports its own start. Each event
   carries its own `timestamp` and `uuid` (a resent batch counts once) and the computer's key
   (`computer`, a hash of its id); batches go to `/batch/` every 30 s and once more when the
@@ -96,7 +97,9 @@ host panic is its location only.
 
 Alerts email the owner, from insights on the *Codync users* dashboard (production only): *Any
 crash or error in a day* (`$exception` > 0, checked daily) and *Failed agent turns over 15 in an
-hour* (`turn_finished` with `outcome = failed`, checked hourly; a normal hour has a few). Error
+hour* (`turn_finished` with `outcome = failed`, checked hourly; a normal hour has a few). A turn
+that only needs the user to sign in or install the agent reports `needs_setup` and isn't counted;
+older hosts still report it as `failed` with `error` `sign_in`/`not_installed`. Error
 tracking's own issue alerts (new, reopened, spiking) need a Slack or Discord destination.
 
 Errors traced to a root cause are written up in [investigations](../README.md#investigations);

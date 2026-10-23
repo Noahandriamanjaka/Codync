@@ -17,7 +17,7 @@ Bot-based remote for coding agents: persistent named bots on your computer, mess
 ## Clean code
 
 - Keep code modular and clean on every change: reuse before writing, one responsibility per file/type, no new code appended to files past ~500 lines (split first), views/components hold no I/O or logic, short single-purpose functions, enums over flags, no dead code, no swallowed errors. Full rules: [docs/guides/clean-code.md](docs/guides/clean-code.md).
-- After every code change (tests green, before commit): review → fix → end-to-end test → cleanup and refactor, by running the `after-change` workflow from the change's worktree; then merge into `dev`, and only after the merge is pushed stop its `npm run dev` and delete the worktree: [after every change](docs/guides/clean-code.md#after-every-change-review-e2e-cleanup).
+- After every code change (tests green, before commit): review → fix, refactor and cleanup → end-to-end test, by running the `after-change` workflow from the change's worktree; then merge into `dev`, and only after the merge is pushed stop its `npm run dev` and delete the worktree: [after every change](docs/guides/clean-code.md#after-every-change-review-e2e-cleanup).
 
 ## Architecture
 
@@ -87,7 +87,7 @@ Build targets, folder layout, file naming and shared terms: [docs/architecture/f
 - Before starting any task, sync with origin: `git pull --rebase --autostash origin dev`, then push any finished local commits that aren't on `origin/dev` yet (`git push origin dev`). The pull is tree-wide, so the next rule applies; if the autostash conflicts, keep both sides' intent and never drop another agent's hunk.
 - Before touching files with someone else's uncommitted changes, or anything tree-wide (renames, `xcodegen`, version bump, `git stash`/`reset`/`checkout`), `SendMessage` the agents involved with what you'll change and wait for or answer their replies. Never discard, revert or reformat hunks that aren't yours.
 - External contributors open PRs against `dev`, never `main`. Retarget a contributor PR aimed at `main` to `dev` before reviewing or merging it.
-- An external PR is merged only after its author has verified it end to end locally (real host + the clients it touches, not just builds/tests) and says so in the PR's *Validation*; ask for it in the review if missing.
+- An external PR is merged only after its author has verified it end to end locally (real host + the clients it touches, not just builds/tests) and says so in the PR's *Validation* (a PR made with Claude Code also pastes the author's `after-change` report there); ask for what's missing in the review. Before merging, also check the PR out into its own worktree and run the `after-change` workflow there (`base: origin/dev`); its fixes go on the PR branch, so the merge carries them.
 
 ## Commit messages
 

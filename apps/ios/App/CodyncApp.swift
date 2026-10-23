@@ -12,6 +12,7 @@ struct CodyncApp: App {
     /// What the App Store has: greys out an update it doesn't have yet, reminds of newer ones.
     @State private var updates = AppUpdates()
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(Appearance.storageKey) private var appearance = Appearance.system
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
     /// Cold launch with a computer to reach: the splash covers its connect and catch-up.
     @State private var launching = !AppStore.shared.accounts.computers.isEmpty
@@ -34,6 +35,7 @@ struct CodyncApp: App {
                 })
                 .environment(updates)
                 .tint(Palette.accent)
+                .background(AppearanceWindow(appearance: appearance).frame(width: 0, height: 0))
                 // No scroll indicators anywhere in the app.
                 .scrollIndicators(.never)
                 .codyncSheet(isPresented: Binding(
@@ -297,12 +299,7 @@ final class AppStore {
         guard let cloud else { return }
         let accounts = accounts
         do {
-            let identity = try DeviceIdentity.load(context: accounts.storage)
-            if let device = try await cloud.devices().first(where: { $0.deviceKey == identity.publicKey }) {
-                for grant in try await cloud.grants(id) where grant.deviceId == device.deviceId {
-                    try await cloud.revokeGrant(id, grantId: grant.grantId)
-                }
-            }
+            try await cloud.revokeDeviceAccess(id)
             accounts.forget(id)
             await accounts.refreshCloud()
         } catch {

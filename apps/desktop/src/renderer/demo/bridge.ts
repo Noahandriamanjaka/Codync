@@ -57,7 +57,7 @@ const bridge: CodyncBridge = {
     signOut: async () => {},
     token: unavailable,
   },
-  speech: { available: false, locales: () => [], start() {}, stop() {}, onEvent: none },
+  speech: { available: false, locales: () => [], start() {}, stop() {}, onEvent: none, shortcut: async () => 'off', setShortcut: async () => 'off', setCalling() {} },
   ssh: {
     state: async () => ({ profiles: [], status: {}, attachments: [] }),
     onChange: none,
@@ -81,6 +81,7 @@ const bridge: CodyncBridge = {
     setFocusable() {},
     setKeys() {},
     onKey: none,
+    onVoiceKey: none,
     respond() {},
     send() {},
     openBot() {},
@@ -93,7 +94,6 @@ const bridge: CodyncBridge = {
   app: {
     reportError() {},
     openExternal: (url) => void window.open(url, '_blank', 'noopener'),
-    openMemoryFile: () => {},
     copy: (text) => void navigator.clipboard?.writeText(text).catch(() => {}),
     pickFiles: async () => [],
     readClipboardFiles: async () => [],
@@ -101,6 +101,8 @@ const bridge: CodyncBridge = {
     onCommand: none,
     resetAllData: async () => {},
     setLaunchAtLogin: async () => false,
+    appearance: async () => 'system',
+    setAppearance: async (value) => value,
     showInDock: async () => true,
     setShowInDock: async () => true,
     launchAtLogin: async () => false,

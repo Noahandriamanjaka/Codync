@@ -1,10 +1,10 @@
 //! Commands from clients and the queue of turns waiting for the bot.
 
-use super::{Actor, CANCEL_GRACE, Cmd, Done, NoticeStyle, Queued, RESUME_PROMPT, RoutineCompletion, inflight_key};
+use super::{Actor, CANCEL_GRACE, Cmd, Done, Queued, RESUME_PROMPT, RoutineCompletion, inflight_key};
 use crate::agent::own_memory;
 use crate::chat::memory;
 use crate::hub::BotStatus;
-use crate::market::requests;
+use crate::market::agent_sign_in;
 use crate::store::{Lane, now_ms};
 use anyhow::{Result, anyhow};
 use serde_json::json;
@@ -30,6 +30,8 @@ impl Actor {
                 }
             }
             Cmd::Group(turn) => {
+                // The room asks again: this turn answers for any still waiting there.
+                self.queue.retain(|q| !matches!(q, Queued::Group(g) if g.lane == turn.lane));
                 self.queue.push_back(Queued::Group(turn));
                 if self.turn.is_none() {
                     self.next_in_queue(done_tx).await;
@@ -75,12 +77,21 @@ impl Actor {
                     self.stop().await;
                 }
                 self.forget_session();
+                self.forget_parked();
                 // Retain and summarize completed exchanges even when the user starts afresh. The chat shows no line
                 // for it: the user just confirmed it.
                 let _ = self.dreamer.send(memory::DreamEvent::Flush);
             }
-            Cmd::Reconfigure(cfg) => {
-                let cfg = *cfg;
+            Cmd::SwitchBack => self.switch_back().await,
+            Cmd::Reconfigure(base) => {
+                let old = std::mem::replace(&mut self.base, *base);
+                // On its own agent the bot takes the new one; on a fallback it keeps that agent (its step may have
+                // moved) until `settle_chain` moves it off one it no longer uses.
+                let cfg = if crate::agent::fallback::step_of(&old, &self.cfg.backend) == Some(0) {
+                    crate::agent::fallback::effective(&self.base, 0)
+                } else {
+                    super::fallback::running(&self.base, &self.cfg)
+                };
                 // The harness reads its own memory's switch when it starts: an agent that can resume its session
                 // restarts into it, one that can't starts afresh.
                 let memory_changed = own_memory::kept(&cfg) != own_memory::kept(&self.cfg);
@@ -113,6 +124,7 @@ impl Actor {
                 } else if restart {
                     self.restart_agent().await;
                 }
+                self.settle_chain(&old).await;
             }
             Cmd::Shutdown => return false,
         }
@@ -127,12 +139,18 @@ impl Actor {
         if self.active_routine.is_none() {
             self.hub.routines.release(&self.cfg.id);
         }
-        // Queued messages are dropped too: Stop means "stop everything".
-        for queued in self.queue.drain(..) {
-            let Queued::User { entry_id, .. } = queued else { continue };
-            if let Some(mut e) = self.hub.store.entry(&entry_id) {
-                e.data["status"] = "cancelled".into();
-                self.hub.set_entry(&entry_id, &e.data);
+        // Queued messages are dropped too: Stop means "stop everything". A room's late turn stays: the room was
+        // told this member answers there once free, and only the group's Stop drops it.
+        for queued in std::mem::take(&mut self.queue) {
+            match queued {
+                Queued::Group(turn) if turn.late => self.queue.push_back(Queued::Group(turn)),
+                Queued::User { entry_id, .. } => {
+                    if let Some(mut e) = self.hub.store.entry(&entry_id) {
+                        e.data["status"] = "cancelled".into();
+                        self.hub.set_entry(&entry_id, &e.data);
+                    }
+                }
+                _ => {}
             }
         }
         self.cancel_turn().await;
@@ -183,7 +201,7 @@ impl Actor {
                             self.routine_deadline = Some(Instant::now() + prepared.timeout);
                             let result = self.start_turn(prepared.lane, &[], &prepared.prompt, false, done_tx).await;
                             if let Err(error) = result {
-                                self.start_failed(&error);
+                                self.start_error(error, done_tx).await;
                             }
                         }
                         Ok(None) => {
@@ -213,23 +231,30 @@ impl Actor {
                     self.active_request = Some(ask);
                     let result = self.start_turn(main.clone(), &ids, &prompt, false, done_tx).await;
                     if let Err(e) = result {
-                        self.start_failed(&e);
+                        self.start_error(e, done_tx).await;
                     }
                     continue;
                 }
                 Some(Queued::Group(_)) => {
-                    let Some(Queued::Group(turn)) = self.queue.pop_front() else {
+                    let Some(Queued::Group(mut turn)) = self.queue.pop_front() else {
                         unreachable!("front is a group turn")
                     };
-                    // A newer message in the room (or Stop) ended the room turn that queued this.
-                    if turn.reply.is_closed() || !self.hub.groups.current(&turn.lane, turn.epoch) {
+                    // A newer message in the room (or Stop) ended the room turn that queued this; a late turn
+                    // answers anyway (see `GroupTurn::late`).
+                    if turn.reply.is_closed() || !(turn.late || self.hub.groups.current(&turn.lane, turn.epoch)) {
+                        continue;
+                    }
+                    if turn.late
+                        && let Err(error) = crate::chat::group::refresh(&self.hub, &mut turn, &self.cfg)
+                    {
+                        tracing::warn!(bot = self.cfg.id, error = format!("{error:#}"), "late room turn dropped");
                         continue;
                     }
                     let (lane, prompt) = (turn.lane.clone(), turn.prompt.clone());
                     self.active_group = Some(turn);
                     let result = self.start_turn(lane, &[], &prompt, false, done_tx).await;
                     if let Err(e) = result {
-                        self.start_failed(&e);
+                        self.start_error(e, done_tx).await;
                     }
                     continue;
                 }
@@ -256,12 +281,13 @@ impl Actor {
             }
             let ids: Vec<String> = batch.iter().map(|(id, _)| id.clone()).collect();
             let text = batch.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n\n");
-            // A handoff waiting in the chat starts a new conversation with this message.
+            // A handoff waiting in the chat starts a new conversation with this message, as does one already taken
+            // for a turn that couldn't start.
             if lane == main {
-                self.handoff = self.take_handoff();
+                self.handoff = self.take_handoff().or_else(|| self.handoff.take());
             }
             if let Err(e) = self.start_turn(lane, &ids, &text, false, done_tx).await {
-                self.start_failed(&e);
+                self.start_error(e, done_tx).await;
             }
         }
     }
@@ -275,9 +301,12 @@ impl Actor {
         self.complete_group(Err(anyhow!("couldn't start: {e:#}")));
         if !self.invite_sign_in(e) {
             // `{:#}` keeps the reason ("starting `npx …`: EACCES"), not just "agent process exited".
-            self.notice(&format!("Couldn't start the agent: {e:#}"), NoticeStyle::Error);
+            self.failure_notice(e, &format!("Couldn't start the agent: {e:#}"));
         }
+        // What the chain carried in (a recap, a takeover) was this turn's; the user's handoff waits for the next.
+        self.relay.carried = None;
         self.turn = None;
+        memory::turns::drop_turn(&self.cfg.id);
         if self.routine_completion.is_none() {
             self.set_inflight(false);
         }
@@ -296,12 +325,17 @@ impl Actor {
     /// chat, which sends this turn's messages again once the user has signed in. Whether it did.
     pub(super) fn invite_sign_in(&self, e: &anyhow::Error) -> bool {
         let backend = &self.cfg.backend;
-        let Some(h) = crate::agent::backends::harness(backend).filter(|_| crate::agent::acp::needs_sign_in(e)) else {
+        if crate::agent::backends::harness(backend).is_none() || !crate::agent::acp::needs_sign_in(e) {
             return false;
-        };
+        }
         crate::agent::backends::set_signed_in(backend, Some(false));
-        let invited =
-            requests::invite_agent_sign_in(&self.hub, &self.cfg.id, &self.lane, backend, h.name, &self.turn_entries);
+        self.sign_in_card(backend, self.held_for_sign_in())
+    }
+
+    /// Agent `backend`'s sign-in card in the chat, holding `entries`. Whether it's there.
+    pub(super) fn sign_in_card(&self, backend: &str, entries: &[String]) -> bool {
+        let Some(h) = crate::agent::backends::harness(backend) else { return false };
+        let invited = agent_sign_in::invite(&self.hub, &self.cfg.id, &self.lane, backend, h.name, entries);
         invited
             .inspect_err(
                 |error| tracing::warn!(bot = %self.cfg.id, error = format!("{error:#}"), "couldn't ask to sign in"),
@@ -328,7 +362,9 @@ impl Actor {
         text: Option<String>,
     ) {
         if let Some(id) = self.active_routine.take() {
-            self.routine_completion = Some(RoutineCompletion { id, status, detail, text });
+            // The deadline also covers a session setup that ran out the clock before any turn began.
+            let timed_out = self.routine_timed_out || self.routine_deadline.is_some_and(|d| Instant::now() >= d);
+            self.routine_completion = Some(RoutineCompletion { id, status, detail, text, timed_out });
             self.routine_deadline = None;
             self.retry_routine_completion();
         }
@@ -346,6 +382,7 @@ impl Actor {
             completion.status,
             completion.detail.clone(),
             completion.text.clone(),
+            completion.timed_out,
         ) {
             Ok(()) => {
                 // A finished run's session is never resumed.
@@ -373,7 +410,7 @@ impl Actor {
         if self.session_for(slot.as_deref()).is_none() {
             self.finish_routine(
                 crate::routines::Status::Interrupted,
-                Some("No saved agent session is available; inspect this run before retrying".into()),
+                Some("No saved agent session is available".into()),
                 None,
             );
             return;

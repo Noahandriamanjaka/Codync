@@ -3,23 +3,20 @@ package com.codync.android
 import android.content.ClipData
 import android.content.ClipboardManager
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,9 +28,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -55,7 +52,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
-
 /** One row of a conversation, as iOS `ChatItem` builds them. */
 internal sealed interface ChatItem {
     val id: String
@@ -108,9 +104,9 @@ internal fun chatItems(entries: List<Entry>, pending: List<PendingSend>): List<C
         color = Palette.tertiary, textAlign = TextAlign.Center)
 }
 
-/** One chat-visible entry, with what can be done to it. `reply` quotes it in the composer. */
+/** One chat-visible entry, with what can be done to it. `reply` quotes it in the composer; `addFallback` opens a bot's fallbacks. */
 @Composable internal fun ChatRow(entry: Entry, groupStart: Boolean, chat: Bot?, state: AppState, store: AppStore,
-    openTrace: () -> Unit, reply: (() -> Unit)?, connect: ConnectionRequestActions) {
+    openTrace: () -> Unit, reply: (() -> Unit)?, connect: ConnectionRequestActions, addFallback: (Bot) -> Unit) {
     val group = chat?.kind == "group"
     when (entry.kind) {
         "user" -> Column(Modifier.fillMaxWidth().padding(top = if (groupStart) 12.dp else 4.dp).animateContentSize(Motion.layoutSize),
@@ -132,7 +128,11 @@ internal fun chatItems(entries: List<Entry>, pending: List<PendingSend>): List<C
         }
         else -> if (entry.data["connectionRequest"] is JsonObject) Box(Modifier.padding(top = 12.dp)) {
             ConnectionRequestCard(entry, state, store, connect.openApp, connect.install)
-        } else Box(Modifier.padding(top = 10.dp)) { NoticeRow(entry) }
+        } else Box(Modifier.padding(top = 10.dp)) {
+            // In a group, the member whose agent failed.
+            val owner = state.bots.firstOrNull { it.id == (entry.data.text("author") ?: entry.botId) && it.kind != "group" }
+            NoticeRow(entry, owner?.let { { addFallback(it) } })
+        }
     }
 }
 
@@ -167,12 +167,13 @@ internal val Entry.reactions: List<String> get() = (data["reactions"] as? JsonAr
 
 @Composable private fun UserBubble(entry: Entry, state: AppState, store: AppStore, reply: (() -> Unit)?) {
     val context = LocalContext.current
+    val focus = LocalFocusManager.current
     val attachments = entry.data["attachments"]?.jsonArray?.map { WireJson.decodeFromJsonElement<Attachment>(it) }.orEmpty()
     Column(Modifier.fillMaxWidth().padding(start = 56.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (attachments.isNotEmpty()) AttachmentList(attachments, entry.botId, state, store)
         val quote = entry.replyTo
         if (entry.text.isNotEmpty() || quote != null) Box(Modifier.clip(RoundedRectangle(18.dp)).background(Palette.bubbleUser)
-            .contextActions(reactions = reactionPick(entry, store), preview = { SelectionContainer { UserText(entry.text, quote) } }) {
+            .contextActions(reactions = reactionPick(entry, store), onClick = { focus.clearFocus() }, preview = { SelectionContainer { UserText(entry.text, quote) } }) {
                 messageMenu(context, entry, reply, null)
             }) { UserText(entry.text, quote) }
         SendStatusLine(entry.status, state.bots.firstOrNull { it.id == entry.botId }?.status == "working")
@@ -237,14 +238,15 @@ internal val Entry.reactions: List<String> get() = (data["reactions"] as? JsonAr
 
 @Composable private fun AgentBubble(entry: Entry, state: AppState, store: AppStore, openTrace: () -> Unit, reply: (() -> Unit)?) {
     val context = LocalContext.current
+    val focus = LocalFocusManager.current
     val files = entry.files
     Column(Modifier.fillMaxWidth().padding(end = 40.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         // A message with files is its files: the text is only the computer's fallback.
-        if (files.isNotEmpty()) Column(Modifier.contextActions(reactions = reactionPick(entry, store)) { messageMenu(context, entry, reply, openTrace) },
+        if (files.isNotEmpty()) Column(Modifier.contextActions(reactions = reactionPick(entry, store), onClick = { focus.clearFocus() }) { messageMenu(context, entry, reply, openTrace) },
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             for (file in files) FileDownloadCard(entry, file, state, store)
         } else if (entry.text.isNotEmpty()) Box(Modifier.clip(RoundedRectangle(18.dp)).background(Palette.bubbleAgent)
-            .contextActions(reactions = reactionPick(entry, store), preview = { AgentText(entry.text, selectable = true) }) {
+            .contextActions(reactions = reactionPick(entry, store), onClick = { focus.clearFocus() }, preview = { AgentText(entry.text, selectable = true) }) {
                 messageMenu(context, entry, reply, openTrace)
             }) { AgentText(entry.text, selectable = false) }
     }
@@ -292,16 +294,24 @@ internal val Entry.botReactions: Map<String, List<String>> get() =
     (data["botReactions"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
         .groupBy({ it["emoji"]?.jsonPrimitive?.contentOrNull.orEmpty() }, { it["bot"]?.jsonPrimitive?.contentOrNull.orEmpty() })
 
-/** A routine's run in the main chat: tapping it opens Routines on that routine. */
-@Composable internal fun RoutineNotice(entry: Entry, open: () -> Unit) {
-    Row(Modifier.plainButton(action = open).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Symbol("clock.arrow.circlepath", size = 15.dp, tint = Palette.secondary)
-        Text(entry.text.ifEmpty { "Routine" }, style = Type.footnote, color = Palette.secondary)
+/** A routine's line in the main chat: tapping it opens Routines on that routine; a failed run the user can run again
+ *  has a retry button. */
+@Composable internal fun RoutineNotice(entry: Entry, retrying: Boolean, retry: () -> Unit, open: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.plainButton(action = open).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Symbol("clock.arrow.circlepath", size = 15.dp, tint = Palette.secondary)
+            Text(entry.text.ifEmpty { "Routine" }, style = Type.footnote, color = Palette.secondary)
+        }
+        if (entry.data["retry"]?.jsonPrimitive?.booleanOrNull == true) {
+            if (retrying) Spinner(14.dp)
+            else IconButton("Try again", "arrow.clockwise", action = retry)
+        }
     }
 }
 
-@Composable private fun NoticeRow(entry: Entry) {
+/** A line from the computer. `addFallback`, on a failure the bot's fallbacks could have carried, opens them. */
+@Composable private fun NoticeRow(entry: Entry, addFallback: (() -> Unit)?) {
     val text = entry.text
     val seconds = entry.data["callSeconds"]?.jsonPrimitive?.longOrNull
     when {
@@ -313,8 +323,12 @@ internal val Entry.botReactions: Map<String, List<String>> get() =
         entry.data.text("style") == "error" -> Row(Modifier.fillMaxWidth().clip(RoundedRectangle(12.dp))
             .background(Palette.danger.copy(alpha = 0.12f)).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Symbol("exclamationmark.triangle.fill", size = 16.dp, tint = Palette.danger)
-            SelectionContainer { Text(text, style = Type.footnote, color = Palette.text) }
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SelectionContainer { Text(text, style = Type.footnote, color = Palette.text) }
+                if (addFallback != null && entry.data["addFallback"]?.jsonPrimitive?.booleanOrNull == true) SecondaryButton("Add a fallback", action = addFallback)
+            }
         }
+        "agentSwitch" in entry.data -> AgentSwitchLine(text, (entry.data["agentSwitch"] as? JsonObject)?.text("carried"))
         // A fresh conversation starts at the left, as on the iPhone.
         "handoff" in entry.data -> Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -325,28 +339,34 @@ internal val Entry.botReactions: Map<String, List<String>> get() =
     }
 }
 
-/**
- * The bot's live activity line: a turning orb, what it's doing and for how long. Tapping it
- * unfolds what the bot is thinking right now.
- */
-@Composable internal fun WorkingIndicator(bot: Bot, thinking: String?) {
+/** Another agent took over the chat (or its own is back): tapping the line unfolds what the new agent was told. */
+@Composable private fun AgentSwitchLine(text: String, carried: String?) {
+    val label: @Composable RowScope.() -> Unit = {
+        Symbol("arrow.turn.down.right", size = 13.dp, tint = Palette.secondary)
+        Spacer(Modifier.width(6.dp))
+        Text(text, Modifier.weight(1f, fill = false), style = Type.footnote, color = Palette.secondary)
+    }
     var expanded by remember { mutableStateOf(false) }
+    if (carried.isNullOrEmpty()) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, content = label)
+    else Disclosure(expanded, { expanded = !expanded }, Modifier.fillMaxWidth(), label) {
+        SelectionContainer {
+            Text(carried, Modifier.fillMaxWidth().clip(RoundedRectangle(12.dp)).background(Palette.bubbleAgent).padding(12.dp),
+                style = Type.footnote, color = Palette.secondary)
+        }
+    }
+}
+
+/** The bot's current activity and elapsed time. */
+@Composable internal fun WorkingIndicator(bot: Bot) {
     val needs = bot.status == "needsInput"
-    val turn by animateFloatAsState(if (expanded) 180f else 0f, Motion.layout(), label = "Thinking")
-    Row(Modifier.fillMaxWidth().padding(top = 6.dp, end = 40.dp)) {
-        Column(Modifier.clip(RoundedRectangle(18.dp)).background(Palette.bubbleAgent)
-            .clickable(enabled = thinking != null, role = Role.Button) { expanded = !expanded }
-            .animateContentSize(Motion.layoutSize).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ThinkingOrb(if (needs) ThinkingOrbState.Listening else ThinkingOrbState.Working, 16.dp, if (needs) Palette.warning else Palette.secondary)
-                Text(bot.activity.ifEmpty { "Working…" }, Modifier.weight(1f, fill = false), style = Type.subheadline,
-                    color = if (needs) Palette.warning else Palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                bot.startedAt?.let { Elapsed(it) }
-                if (thinking != null) Symbol("chevron.down", Modifier.rotate(turn), size = 12.dp, tint = Palette.tertiary)
-            }
-            if (expanded && thinking != null) Box(Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState(Int.MAX_VALUE))) {
-                SelectionContainer { Text(thinking, style = Type.footnote, color = Palette.secondary) }
-            }
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp, end = 40.dp)) {
+        Row(Modifier.clip(RoundedRectangle(18.dp)).background(Palette.bubbleAgent)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThinkingOrb(if (needs) ThinkingOrbState.Listening else ThinkingOrbState.Working, 16.dp, if (needs) Palette.warning else Palette.secondary)
+            Text(bot.activity.ifEmpty { "Working…" }, Modifier.weight(1f, fill = false), style = Type.subheadline,
+                color = if (needs) Palette.warning else Palette.secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            bot.startedAt?.let { Elapsed(it) }
         }
     }
 }
@@ -358,16 +378,6 @@ internal val Entry.botReactions: Map<String, List<String>> get() =
     val seconds = maxOf(0, (now - startedAt) / 1000)
     Text(if (seconds >= 3600) "%d:%02d:%02d".format(seconds / 3600, seconds / 60 % 60, seconds % 60) else "%d:%02d".format(seconds / 60, seconds % 60),
         style = Type.footnote.monospacedDigit, color = Palette.tertiary)
-}
-
-/** The latest thinking of the turn running in a chat. */
-internal fun currentThinking(entries: List<Entry>, botId: String): String? {
-    for (e in entries.asReversed()) {
-        if (e.botId != botId) continue
-        if (e.kind == "user" || (e.kind == "agent" && e.data["final"]?.jsonPrimitive?.booleanOrNull == true)) return null
-        if (e.kind == "thought" && e.text.isNotEmpty()) return e.text
-    }
-    return null
 }
 
 /** The start of an empty chat: who the bot is and how it works. */

@@ -2,7 +2,7 @@ import { FileDownloadCard } from './FileDownloadCard'
 import { memo, useEffect, useRef, useState } from 'react'
 import { groupBotReactions, isGroup, isReplyable, isWorking, needsInput, type Bot, type Entry, type ReplyQuote } from '@shared/models'
 import { BotAvatar } from '../../components/Avatar'
-import { IconButton } from '../../components/Controls'
+import { Button, IconButton } from '../../components/Controls'
 import { Icon } from '../../components/Icon'
 import { AnchoredMenu, useContextMenu, type MenuItem, type ReactionPick } from '../../components/Overlay'
 import { HStack, VStack } from '../../components/Stack'
@@ -17,20 +17,22 @@ import { relativeTime } from './chat-items'
 import { MarkdownText } from './Markdown'
 import { PermissionCard } from './PermissionCard'
 import { ConnectionRequestCard } from '../marketplace/ConnectionRequestCard'
-import { HandoffNotice } from './HandoffNotice'
+import { AgentSwitchNotice, HandoffNotice } from './HandoffNotice'
 
 export function reactionPick(store: BotStore, entry: Entry): ReactionPick {
   return { emoji: QUICK_REACTIONS, chosen: entry.data.reactions ?? [], toggle: (e) => store.react(entry, e) }
 }
 
 /** One chat-visible entry, with what can be done to it. */
-export const ChatRow = memo(function ChatRow({ entry, groupStart, chat, openTrace, onReply }: {
+export const ChatRow = memo(function ChatRow({ entry, groupStart, chat, openTrace, onReply, openAgent }: {
   entry: Entry
   groupStart: boolean
   chat: Bot | null
   openTrace: () => void
   /** Quotes this message in the composer; absent where the computer can't take replies. */
   onReply?: (e: Entry) => void
+  /** Opens a bot's Agent settings (a failure notice's "Add a fallback"). */
+  openAgent?: (botId: string) => void
 }) {
   const reply = onReply && isReplyable(entry) ? () => onReply(entry) : undefined
   switch (entry.kind) {
@@ -61,7 +63,8 @@ export const ChatRow = memo(function ChatRow({ entry, groupStart, chat, openTrac
     default:
       if (entry.data.connectionRequest) return <div className="chat-row group-start"><ConnectionRequestCard entry={entry} /></div>
       if (entry.data.handoff) return <div className="chat-row notice"><HandoffNotice entry={entry} card={entry.data.handoff} /></div>
-      return <div className="chat-row notice"><NoticeRow entry={entry} /></div>
+      if (entry.data.agentSwitch) return <div className="chat-row notice"><AgentSwitchNotice entry={entry} carried={entry.data.agentSwitch.carried} /></div>
+      return <div className="chat-row notice"><NoticeRow entry={entry} addFallback={entry.data.addFallback && openAgent ? () => openAgent(entry.data.author ?? entry.botId) : undefined} /></div>
   }
 })
 
@@ -189,7 +192,7 @@ export function AgentBubble({ entry, openTrace, reply }: { entry: Entry; openTra
   )
 }
 
-export function NoticeRow({ entry }: { entry: Entry }) {
+export function NoticeRow({ entry, addFallback }: { entry: Entry; addFallback?: () => void }) {
   const text = entry.data.text ?? ''
   if (entry.data.callSeconds !== undefined) {
     const s = entry.data.callSeconds
@@ -205,7 +208,10 @@ export function NoticeRow({ entry }: { entry: Entry }) {
       return (
         <HStack align="flex-start" gap={8} className="chat-notice-error">
           <Icon name="exclamationmark.triangle.fill" size={10} color="var(--danger)" />
-          <Text size="footnote" tone="text" className="selectable">{text}</Text>
+          <VStack gap={10} align="flex-start">
+            <Text size="footnote" tone="text" className="selectable">{text}</Text>
+            {addFallback ? <Button kind="secondary" onClick={addFallback}>Add a fallback</Button> : null}
+          </VStack>
         </HStack>
       )
     default:
@@ -213,35 +219,19 @@ export function NoticeRow({ entry }: { entry: Entry }) {
   }
 }
 
-/**
- * The bot's live activity line: a turning orb, what it's doing and for how long. Clicking it
- * unfolds what the bot is thinking right now.
- */
-export function WorkingIndicator({ bot, thinking }: { bot: Bot; thinking: string | null }) {
-  const [expanded, setExpanded] = useState(false)
+/** The bot's current activity and elapsed time. */
+export function WorkingIndicator({ bot }: { bot: Bot }) {
   const waiting = needsInput(bot)
   return (
-    <HStack gap={10} className="agent-inset">
-      <button className="working" disabled={!thinking} onClick={() => setExpanded((e) => !e)} aria-expanded={thinking ? expanded : undefined}>
+    <VStack align="flex-start" className="agent-inset">
+      <div className="working">
         <HStack as="span" gap={8}>
           <ThinkingOrb state={waiting ? 'listening' : 'working'} size={16} color={waiting ? 'var(--warning)' : 'var(--secondary)'} />
           <Text size="subheadline" tone={waiting ? 'attention' : 'secondary'} truncate>{bot.activity || 'Working…'}</Text>
           {bot.startedAt ? <Timer since={bot.startedAt} /> : null}
-          {thinking ? (
-            <HStack as="span" align="stretch" className={expanded ? 'working-chevron expanded' : 'working-chevron'}>
-              <Icon name="chevron.down" size={10} weight="semibold" color="var(--tertiary)" />
-            </HStack>
-          ) : null}
         </HStack>
-        {expanded && thinking ? (
-          <div className="selectable thinking" ref={(el) => {
-            if (el) el.scrollTop = el.scrollHeight
-          }}>
-            {thinking}
-          </div>
-        ) : null}
-      </button>
-    </HStack>
+      </div>
+    </VStack>
   )
 }
 

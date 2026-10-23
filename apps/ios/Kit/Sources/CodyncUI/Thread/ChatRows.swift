@@ -12,6 +12,8 @@ struct ChatRow: View {
     let openTrace: () -> Void
     /// Quotes this message in the composer; nil where it can't be.
     var reply: (() -> Void)?
+    /// A failure notice's "Add a fallback": the bot's details.
+    var addFallback: (() -> Void)?
     @Environment(BotStore.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -48,8 +50,10 @@ struct ChatRow: View {
                 ConnectionRequestCard(entry: entry, request: request).padding(.top, 12)
             } else if let card = entry.data.handoff {
                 HandoffCardRow(entry: entry, card: card).padding(.top, 10)
+            } else if let change = entry.data.agentSwitch {
+                AgentSwitchRow(entry: entry, change: change).padding(.top, 10)
             } else {
-                NoticeRow(entry: entry).padding(.top, 10)
+                NoticeRow(entry: entry, addFallback: addFallback).padding(.top, 10)
             }
         }
     }
@@ -211,6 +215,7 @@ struct AgentBubble: View {
 
 struct NoticeRow: View {
     let entry: Entry
+    var addFallback: (() -> Void)?
 
     var body: some View {
         let text = entry.data.text ?? ""
@@ -227,10 +232,15 @@ struct NoticeRow: View {
     @ViewBuilder private func styled(_ text: String) -> some View {
         switch entry.data.style {
         case "error":
-            Label {
-                Text(text).font(.footnote).foregroundStyle(Palette.text).textSelection(.enabled)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.danger)
+            VStack(alignment: .leading, spacing: 10) {
+                Label {
+                    Text(text).font(.footnote).foregroundStyle(Palette.text).textSelection(.enabled)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.danger)
+                }
+                if entry.data.addFallback == true, let addFallback {
+                    Button("Add a fallback", action: addFallback).buttonStyle(.secondary)
+                }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -245,73 +255,28 @@ struct NoticeRow: View {
     }
 }
 
-/// The bot's live activity line: a turning orb, what it's doing and for how long. Tapping it
-/// unfolds what the bot is thinking right now (the whole trace stays in "Full conversation").
+/// The bot's current activity and elapsed time.
 struct WorkingIndicator: View {
     let bot: Bot
-    /// The running turn's latest thinking, if the agent shares it.
-    var thinking: String?
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Button {
-                withAnimation(Motion.reduced(Motion.layout, reduceMotion)) { expanded.toggle() }
-            } label: {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        ThinkingOrb(state: bot.needsInput ? .listening : .working, size: 16, color: bot.needsInput ? Palette.warning : Palette.secondary)
-                        Text(bot.activity.isEmpty ? "Working…" : bot.activity)
-                            .font(.subheadline)
-                            .foregroundStyle(bot.needsInput ? Palette.warning : Palette.secondary)
-                            .lineLimit(1)
-                        if let started = bot.startedAt {
-                            Text(Date(milliseconds: started), style: .timer)
-                                .font(.footnote.monospacedDigit())
-                                .foregroundStyle(Palette.tertiary)
-                        }
-                        if thinking != nil {
-                            Image(systemName: "chevron.down")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Palette.tertiary)
-                                .rotationEffect(.degrees(expanded ? 180 : 0))
-                        }
-                    }
-                    if expanded, let thinking {
-                        ScrollView {
-                            Text(thinking)
-                                .font(.footnote)
-                                .foregroundStyle(Palette.secondary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .defaultScrollAnchor(.bottom)
-                        .frame(maxHeight: 180)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .transition(.opacity)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(Palette.bubbleAgent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        HStack(spacing: 8) {
+            ThinkingOrb(state: bot.needsInput ? .listening : .working, size: 16, color: bot.needsInput ? Palette.warning : Palette.secondary)
+            Text(bot.activity.isEmpty ? "Working…" : bot.activity)
+                .font(.subheadline)
+                .foregroundStyle(bot.needsInput ? Palette.warning : Palette.secondary)
+                .lineLimit(1)
+            if let started = bot.startedAt {
+                Text(Date(milliseconds: started), style: .timer)
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(Palette.tertiary)
             }
-            .buttonStyle(.plain)
-            .disabled(thinking == nil)
-            .accessibilityHint(thinking == nil ? "" : expanded ? "Hides its thinking" : "Shows its thinking")
-            Spacer(minLength: 40)
         }
-    }
-}
-
-extension BotStore {
-    /// The latest thinking of the turn running in a chat: the newest thought since the last message.
-    func currentThinking(_ botId: String) -> String? {
-        for e in chat(botId).reversed() {
-            if e.kind == "user" || (e.kind == "agent" && e.data.final == true) { return nil }
-            if e.kind == "thought", let text = e.data.text, !text.isEmpty { return text }
-        }
-        return nil
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Palette.bubbleAgent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 40)
     }
 }
 

@@ -83,23 +83,9 @@ pub(super) fn build_chat(app: &App, b: &Bot, width: usize) -> Built {
         }
     }
     // A turn in flight: who's on it and what they're doing.
-    let last_turn = entries.iter().map(|e| e.turn).max().unwrap_or(0);
     // A message doesn't end the turn: the bot may send several.
-    if b.status == Status::Working && b.works_here() {
-        gap(&mut out);
-        out.lines.push(Line::from(Span::styled(format!(" {}", b.name), name_style(&b.color))));
-        let act = if b.activity.is_empty() { "Working…".to_owned() } else { b.activity.clone() };
-        out.lines.push(Line::from(vec![
-            Span::styled(format!(" {} ", spin(app)), t.secondary),
-            Span::styled(truncate(&act, width.saturating_sub(4)), t.secondary),
-        ]));
-        let steps = info.get(&last_turn).map_or(0, |ti| ti.steps);
-        if steps > 0 {
-            out.lines.push(Line::from(Span::styled(
-                format!("   {steps} step{} so far · t shows them live", if steps == 1 { "" } else { "s" }),
-                t.dim,
-            )));
-        }
+    if app.online && matches!(b.status, Status::Working | Status::NeedsInput) && b.works_here() {
+        super::activity::activity(&mut out, app, b, &entries, width);
     } else if let Some(group) = b.away().filter(|_| matches!(b.status, Status::Working | Status::NeedsInput)) {
         // Busy in a group it's in.
         let place = app.author_name(Some(group));
@@ -270,6 +256,14 @@ fn entry_lines(out: &mut Built, app: &App, b: &Bot, e: &Entry, info: &HashMap<i6
                 let hint =
                     if status == "draft" { " · o shows it · e edits · K keeps this chat" } else { " · o shows it" };
                 format!("{}{hint}", e.notice_text())
+            } else if e.data["agentSwitch"].is_object() {
+                // Another agent took over (or the bot's own came back): `o` shows what it was told.
+                let hint = if unfoldable(e).is_some() { " · o shows what it carried" } else { "" };
+                format!("↪ {}{hint}", e.notice_text())
+            } else if app.fallback_owner(&b.id, e).is_some() {
+                format!("{} · A adds a fallback", e.notice_text())
+            } else if e.retries() {
+                format!("{} · F tries again", e.notice_text())
             } else {
                 e.notice_text()
             };
@@ -299,7 +293,7 @@ fn entry_lines(out: &mut Built, app: &App, b: &Bot, e: &Entry, info: &HashMap<i6
                     &[Span::raw("   │ ")],
                 ));
             }
-            if e.data["connectionRequest"].is_object() || folded.is_some() {
+            if e.data["connectionRequest"].is_object() || folded.is_some() || e.retries() || e.adds_fallback() {
                 out.messages.push((e.id.clone(), from, out.lines.len()));
             }
         }
@@ -307,9 +301,9 @@ fn entry_lines(out: &mut Built, app: &App, b: &Bot, e: &Entry, info: &HashMap<i6
     }
 }
 
-/// The full text a chat line folds away: what a handoff carries.
+/// The full text a chat line folds away: what a handoff carries, or what an agent taking over was told.
 pub(in crate::tui) fn unfoldable(e: &Entry) -> Option<&str> {
-    e.data["handoff"]["text"].as_str().filter(|t| !t.is_empty())
+    e.data["handoff"]["text"].as_str().or_else(|| e.data["agentSwitch"]["carried"].as_str()).filter(|t| !t.is_empty())
 }
 
 /// A bot-to-bot exchange, or a run of them, as one compact line ("· Messaged ▌O▐ Owen",

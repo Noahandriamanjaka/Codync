@@ -33,7 +33,8 @@ it has no pointer tooltip or link-opening action.
 - The same server has `set_name {name}` and `set_instructions {instructions}` (`host/src/chat/profile.rs`): the
   bot changes its own name or instructions (its description) when the user asks it to, exactly as an edit in its
   settings would, and a notice ("Renamed to …", "Instructions updated") shows it in the main chat. A name set this
-  way ends automatic naming.
+  way ends automatic naming. Its `save_skill` writes a skill for the bot, which the user can turn on for others
+  ([skills bots write](marketplace.md)).
 - A bot-to-bot exchange (`ask_bot`, `message_bot`) is one compact notice row, "Messaged Owen" /
   "Message from Egan". Its text lives only in the bot conversation sheet it opens; follow-ups
   are normal bubbles. Consecutive exchanges with the same peer in the main chat (either
@@ -62,8 +63,13 @@ it has no pointer tooltip or link-opening action.
 ## While it works
 
 The working line under the last message shows the bot's activity; composing a `send_message`
-reads as **Typing…** (`activity()` in `agent/bot.rs`). Thoughts and tool calls stay in the
-Full conversation sheet.
+reads as **Typing…** (`activity()` in `agent/bot.rs`). The activity indicator shows an animated orb,
+a short status and elapsed time. It is not interactive and does not expand thinking text.
+Replies arrive as complete messages.
+
+Full conversation remains available from the conversation menu. It contains narration, all
+thoughts, tools and previous turns, and follows new steps until the reader scrolls up.
+On the terminal, `t` opens Full conversation, and the working line retains the count of steps so far.
 
 ## Motion and scrolling
 
@@ -72,9 +78,22 @@ Full conversation sheet.
   `ConversationList.swift`; desktop: `.row-in` in `thread.css`; reduced motion: a 0.12 s fade).
 - The list stays pinned to the bottom while the reader is there; scrolling up releases it and the
   round "Jump to latest" button brings it back. Sending always returns to the bottom.
+- Opening or closing the phone keyboard keeps a bottom-following chat on its latest message;
+  reading older messages preserves that position. iPhone viewport updates do not count as user
+  scrolling and wait for any active touch to finish before applying a deferred bottom follow.
+  Android already follows viewport/padding changes; desktop observes transcript resizing, and
+  the terminal renders its bottom-relative scroll position without a software keyboard.
+- iOS 26+ uses the native circular Liquid Glass button for "Jump to latest", with a material
+  fallback on older iOS. Android and Electron retain their platform controls; neither exposes
+  Apple's native Liquid Glass button API. The terminal keeps its keyboard action.
 - iPhone: earlier messages load when the top of the chat comes into view, so a short chat never
   shows a lasting spinner. Pulling down past the top sweeps in the `arrow.clockwise` symbol; letting
   go of a full sweep (`PullToRefresh.swift`) reconnects to the computer while the chat waits just
   below the turning arrow, then eases back. A pull that isn't full refreshes nothing. The desktop
   reconnects from the computer menu instead.
 - The terminal UI lists the same messages; its steps line goes under the turn's last message.
+
+- Electron keeps the activity row mounted during its 0.42 s exit and animates its height,
+  opacity and a small scale change together. The transition honors Reduce Motion and reverses
+  when work restarts during an exit. iPhone conversation insertion, removal and scrolling
+  keep their existing animations.
